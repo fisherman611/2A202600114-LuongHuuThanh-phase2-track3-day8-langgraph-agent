@@ -1,23 +1,23 @@
-from langgraph_agent_lab.routing import route_after_approval, route_after_classify, route_after_evaluate, route_after_retry
-from langgraph_agent_lab.state import Route
+from langgraph_agent_lab.routing import process_human_feedback, determine_next_step, validate_execution_result, eval_retry_status
+from langgraph_agent_lab.state import WorkflowPath
 
 
-def test_route_after_classify():
-    assert route_after_classify({"route": Route.SIMPLE.value}) == "answer"
-    assert route_after_classify({"route": Route.TOOL.value}) == "tool"
-    assert route_after_classify({"route": Route.RISKY.value}) == "risky_action"
+def test_determine_next_step():
+    assert determine_next_step({"selected_path": WorkflowPath.SIMPLE.value}) == "finalize_response"
+    assert determine_next_step({"selected_path": WorkflowPath.TOOL.value}) == "execute_tool_logic"
+    assert determine_next_step({"selected_path": WorkflowPath.RISKY.value}) == "prepare_sensitive_action"
 
 
-def test_route_after_approval():
-    assert route_after_approval({"approval": {"approved": True}}) == "tool"
-    assert route_after_approval({"approval": {"approved": False}}) == "clarify"
+def test_process_human_feedback():
+    assert process_human_feedback({"approval_data": {"is_approved": True}}) == "execute_tool_logic"
+    assert process_human_feedback({"approval_data": {"is_approved": False}}) == "request_clarification"
 
 
-def test_route_after_retry_bound():
-    assert route_after_retry({"attempt": 0, "max_attempts": 3}) == "tool"
-    assert route_after_retry({"attempt": 3, "max_attempts": 3}) == "dead_letter"
+def test_eval_retry_status():
+    assert eval_retry_status({"retry_count": 0, "limit_retries": 3}) == "execute_tool_logic"
+    assert eval_retry_status({"retry_count": 3, "limit_retries": 3}) == "handle_failure_exhaustion"
 
 
-def test_route_after_evaluate():
-    assert route_after_evaluate({"evaluation_result": "success"}) == "answer"
-    assert route_after_evaluate({"evaluation_result": "needs_retry"}) == "retry"
+def test_validate_execution_result():
+    assert validate_execution_result({"validation_status": "success"}) == "finalize_response"
+    assert validate_execution_result({"validation_status": "needs_retry"}) == "increment_retry"

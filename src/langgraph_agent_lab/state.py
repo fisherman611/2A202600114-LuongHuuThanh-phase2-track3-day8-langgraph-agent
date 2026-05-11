@@ -1,18 +1,20 @@
-"""State schema for the Day 08 LangGraph lab.
+"""Schema definitions for the LangGraph agent simulation.
 
-Students should extend the schema only when needed. Keep state lean and serializable.
+This module defines the core data structures used to maintain state across
+the graph execution, including routing enums and audit logging schemas.
 """
 
 from __future__ import annotations
 
 from enum import StrEnum
+from operator import add
 from typing import Annotated, Any, TypedDict
 
-from operator import add
 from pydantic import BaseModel, Field, field_validator
 
 
-class Route(StrEnum):
+class WorkflowPath(StrEnum):
+    """Available routing directions for the agent workflow."""
     SIMPLE = "simple"
     TOOL = "tool"
     MISSING_INFO = "missing_info"
@@ -22,51 +24,61 @@ class Route(StrEnum):
     DONE = "done"
 
 
-class LabEvent(BaseModel):
-    """Append-only audit event for grading and debugging."""
+class AuditEntry(BaseModel):
+    """A structured log entry for auditing node execution and performance."""
 
-    node: str
-    event_type: str
-    message: str
-    latency_ms: int = 0
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    node_name: str
+    status: str
+    description: str
+    duration_ms: int = 0
+    context: dict[str, Any] = Field(default_factory=dict)
 
 
 class ApprovalDecision(BaseModel):
-    approved: bool = False
-    reviewer: str = "mock-reviewer"
-    comment: str = ""
+    """Container for human-in-the-loop approval results."""
+    is_approved: bool = False
+    approver_id: str = "system-default"
+    justification: str = ""
 
 
-class AgentState(TypedDict, total=False):
-    """LangGraph state.
-
-    TODO(student): decide which fields should be append-only and which should be overwritten.
-    The current annotations give a safe starting point for auditability.
+class GlobalState(TypedDict, total=False):
+    """The central state object for the LangGraph execution environment.
+    
+    Attributes:
+        interaction_id: Unique identifier for the current session.
+        scenario_key: ID of the evaluation scenario being executed.
+        user_query: The raw input string from the user.
+        selected_path: The determined route for the request.
+        severity: Risk level assessment of the action.
+        retry_count: Current number of attempts for the operation.
+        limit_retries: Maximum allowed attempts.
     """
 
     thread_id: str
     scenario_id: str
-    query: str
-    route: str
-    risk_level: str
-    attempt: int
-    max_attempts: int
-    final_answer: str | None
-    pending_question: str | None
-    proposed_action: str | None
-    approval: dict[str, Any] | None
-    evaluation_result: str | None
-    messages: Annotated[list[str], add]
-    tool_results: Annotated[list[str], add]
-    errors: Annotated[list[str], add]
-    events: Annotated[list[dict[str, Any]], add]
+    user_query: str
+    selected_path: str
+    severity: str
+    retry_count: int
+    limit_retries: int
+    final_response: str | None
+    clarification_needed: str | None
+    action_proposal: str | None
+    approval_data: dict[str, Any] | None
+    validation_status: str | None
+    conversation: Annotated[list[str], add]
+    tool_outputs: Annotated[list[str], add]
+    error_stack: Annotated[list[str], add]
+    execution_log: Annotated[list[dict[str, Any]], add]
+    node_history: Annotated[list[str], add]
+    validated_route: str
 
 
 class Scenario(BaseModel):
+    """Evaluation scenario configuration."""
     id: str
     query: str
-    expected_route: Route
+    expected_route: WorkflowPath
     requires_approval: bool = False
     should_retry: bool = False
     max_attempts: int = 3
@@ -74,34 +86,41 @@ class Scenario(BaseModel):
 
     @field_validator("query")
     @classmethod
-    def query_must_not_be_empty(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("query must not be empty")
-        return value
+    def validate_non_empty_query(cls, text: str) -> str:
+        """Ensures the scenario query contains non-whitespace characters."""
+        if not text.strip():
+            raise ValueError("Scenario query cannot be empty or whitespace only.")
+        return text
 
 
-def initial_state(scenario: Scenario) -> AgentState:
-    """Create a serializable initial state for one scenario."""
+def create_initial_state(config: Scenario) -> GlobalState:
+    """Initializes the state dictionary based on a scenario configuration."""
     return {
-        "thread_id": f"thread-{scenario.id}",
-        "scenario_id": scenario.id,
-        "query": scenario.query,
-        "route": "",
-        "risk_level": "unknown",
-        "attempt": 0,
-        "max_attempts": scenario.max_attempts,
-        "final_answer": None,
-        "pending_question": None,
-        "proposed_action": None,
-        "approval": None,
-        "evaluation_result": None,
-        "messages": [],
-        "tool_results": [],
-        "errors": [],
-        "events": [],
+        "thread_id": f"session-{config.id}",
+        "scenario_id": config.id,
+        "user_query": config.query,
+        "selected_path": "",
+        "severity": "unclassified",
+        "retry_count": 0,
+        "limit_retries": config.max_attempts,
+        "final_response": None,
+        "clarification_needed": None,
+        "action_proposal": None,
+        "approval_data": None,
+        "validation_status": None,
+        "conversation": [],
+        "tool_outputs": [],
+        "error_stack": [],
+        "execution_log": [],
+        "node_history": [],
+        "validated_route": "",
     }
 
 
-def make_event(node: str, event_type: str, message: str, **metadata: Any) -> dict[str, Any]:
-    """Create a normalized event payload."""
-    return LabEvent(node=node, event_type=event_type, message=message, metadata=metadata).model_dump()
+def record_activity(
+    node: str, status: str, detail: str, **extra_info: object
+) -> dict[str, Any]:
+    """Helper to generate a dictionary representation of an AuditEntry."""
+    return AuditEntry(
+        node_name=node, status=status, description=detail, context=extra_info
+    ).model_dump()

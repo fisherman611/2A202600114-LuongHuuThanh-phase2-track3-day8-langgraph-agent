@@ -1,4 +1,4 @@
-"""Metrics schema and helpers."""
+"""Utilities for performance measurement and reporting."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 
 class ScenarioMetric(BaseModel):
+    """Execution metrics for a single evaluation scenario."""
     scenario_id: str
     success: bool
     expected_route: str
@@ -25,6 +26,7 @@ class ScenarioMetric(BaseModel):
 
 
 class MetricsReport(BaseModel):
+    """Aggregate report across all executed scenarios."""
     total_scenarios: int
     success_rate: float
     avg_nodes_visited: float
@@ -34,46 +36,69 @@ class MetricsReport(BaseModel):
     scenario_metrics: list[ScenarioMetric]
 
 
-def metric_from_state(state: dict[str, Any], expected_route: str, approval_required: bool) -> ScenarioMetric:
-    events = state.get("events", []) or []
-    errors = state.get("errors", []) or []
-    actual_route = state.get("route")
-    approval = state.get("approval")
-    nodes = [event.get("node", "unknown") for event in events]
-    retry_count = sum(1 for node in nodes if node == "retry")
-    interrupt_count = sum(1 for node in nodes if node == "approval")
-    success = actual_route == expected_route and bool(state.get("final_answer") or state.get("pending_question"))
-    if approval_required:
-        success = success and approval is not None
+def extract_run_metrics(
+    state_snapshot: dict[str, Any], expected_path: str, is_approval_mandatory: bool
+) -> ScenarioMetric:
+    """Derives performance metrics from the final state of a graph run."""
+    history = state_snapshot.get("node_history", []) or []
+    logs = state_snapshot.get("execution_log", []) or []
+    
+    # Fallback for empty history if logs are present
+    if not history and logs:
+        history = [entry.get("node_name", "unknown") for entry in logs]
+        
+    stack_trace = state_snapshot.get("error_stack", []) or []
+    detected_path = state_snapshot.get("selected_path")
+    auth_data = state_snapshot.get("approval_data")
+    
+    # Calculate retries and interrupts based on node visitation
+    retries = sum(1 for tag in history if tag == "increment_retry")
+    interrupts = sum(1 for tag in history if tag == "handle_authorization")
+    
+    is_path_correct = detected_path == expected_path
+    has_output = bool(
+        state_snapshot.get("final_response") or state_snapshot.get("clarification_needed")
+    )
+    
+    final_success = is_path_correct and has_output
+    if is_approval_mandatory:
+        final_success = final_success and auth_data is not None
+        
     return ScenarioMetric(
-        scenario_id=str(state.get("scenario_id", "unknown")),
-        success=success,
-        expected_route=expected_route,
-        actual_route=actual_route,
-        nodes_visited=len(nodes),
-        retry_count=retry_count,
-        interrupt_count=interrupt_count,
-        approval_required=approval_required,
-        approval_observed=approval is not None,
-        errors=list(errors),
+        scenario_id=str(state_snapshot.get("scenario_id", "unknown")),
+        success=final_success,
+        expected_route=expected_path,
+        actual_route=detected_path,
+        nodes_visited=len(history),
+        retry_count=retries,
+        interrupt_count=interrupts,
+        approval_required=is_approval_mandatory,
+        approval_observed=auth_data is not None,
+        errors=list(stack_trace),
     )
 
 
-def summarize_metrics(items: list[ScenarioMetric]) -> MetricsReport:
-    if not items:
-        raise ValueError("No scenario metrics to summarize")
+def generate_aggregate_report(metric_list: list[ScenarioMetric]) -> MetricsReport:
+    """Aggregates individual scenario metrics into a single summary report."""
+    if not metric_list:
+        raise ValueError("Metric list is empty; cannot generate summary.")
+        
     return MetricsReport(
-        total_scenarios=len(items),
-        success_rate=sum(1 for item in items if item.success) / len(items),
-        avg_nodes_visited=mean(item.nodes_visited for item in items),
-        total_retries=sum(item.retry_count for item in items),
-        total_interrupts=sum(item.interrupt_count for item in items),
+        total_scenarios=len(metric_list),
+        success_rate=sum(1 for m in metric_list if m.success) / len(metric_list),
+        avg_nodes_visited=mean(m.nodes_visited for m in metric_list),
+        total_retries=sum(m.retry_count for m in metric_list),
+        total_interrupts=sum(m.interrupt_count for m in metric_list),
         resume_success=False,
-        scenario_metrics=items,
+        scenario_metrics=metric_list,
     )
 
 
-def write_metrics(report: MetricsReport, output_path: str | Path) -> None:
-    path = Path(output_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(report.model_dump(), indent=2, ensure_ascii=False), encoding="utf-8")
+def save_metrics_to_disk(report_data: MetricsReport, file_path: str | Path) -> None:
+    """Serializes the metrics report to a JSON file."""
+    target = Path(file_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        json.dumps(report_data.model_dump(), indent=2, ensure_ascii=False), 
+        encoding="utf-8"
+    )

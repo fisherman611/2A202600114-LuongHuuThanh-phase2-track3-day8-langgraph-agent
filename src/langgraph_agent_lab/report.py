@@ -1,4 +1,4 @@
-"""Report generation helper."""
+"""Module for generating human-readable evaluation reports."""
 
 from __future__ import annotations
 
@@ -7,28 +7,27 @@ from pathlib import Path
 from .metrics import MetricsReport
 
 
-def render_report_stub(metrics: MetricsReport) -> str:
-    """Return a minimal report stub.
+def generate_markdown_summary(metrics_data: MetricsReport) -> str:
+    """Creates a structured Markdown representation of the execution metrics."""
+    return f"""# Simulation Performance Analysis
+    
+## Executive Summary
 
-    TODO(student): replace with a richer report using the template in reports/.
-    """
-    return f"""# Day 08 Lab Report
+- **Total Scenarios Evaluated**: {metrics_data.total_scenarios}
+- **Success Rate**: {metrics_data.success_rate:.2%}
+- **Workflow Efficiency (Avg Nodes)**: {metrics_data.avg_nodes_visited:.2f}
+- **Retry Frequency**: {metrics_data.total_retries}
+- **Human-in-the-loop Interrupts**: {metrics_data.total_interrupts}
 
-## Metrics summary
+## Implementation Overview
 
-- Total scenarios: {metrics.total_scenarios}
-- Success rate: {metrics.success_rate:.2%}
-- Average nodes visited: {metrics.avg_nodes_visited:.2f}
-- Total retries: {metrics.total_retries}
-- Total interrupts: {metrics.total_interrupts}
-
-## TODO(student)
-
-Explain your architecture, state schema, failure modes, and improvement plan.
+*Provide a detailed analysis of the agent architecture, state management strategies, 
+and identified edge cases here.*
 """
 
 
-def write_report(metrics: MetricsReport, output_path: str | Path) -> None:
-    path = Path(output_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(render_report_stub(metrics), encoding="utf-8")
+def export_report_to_file(metrics_data: MetricsReport, file_path: str | Path) -> None:
+    """Saves the generated markdown summary to the specified file system path."""
+    target = Path(file_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(generate_markdown_summary(metrics_data), encoding="utf-8")

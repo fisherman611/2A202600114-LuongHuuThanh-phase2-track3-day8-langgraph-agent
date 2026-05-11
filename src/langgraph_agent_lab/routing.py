@@ -1,51 +1,53 @@
-"""Routing functions for conditional edges."""
+"""Logic for navigating between graph nodes based on current state."""
 
 from __future__ import annotations
 
-from .state import AgentState, Route
+from .state import GlobalState, WorkflowPath
 
 
-def route_after_classify(state: AgentState) -> str:
-    """Map classified route to the next graph node.
-
-    TODO(student): handle unknown routes safely and update tests for edge cases.
-    """
-    route = state.get("route", Route.SIMPLE.value)
-    mapping = {
-        Route.SIMPLE.value: "answer",
-        Route.TOOL.value: "tool",
-        Route.MISSING_INFO.value: "clarify",
-        Route.RISKY.value: "risky_action",
-        Route.ERROR.value: "retry",
+def determine_next_step(current_context: GlobalState) -> str:
+    """Analyzes the classification outcome to select the appropriate node."""
+    target_path = current_context.get("selected_path", WorkflowPath.SIMPLE.value)
+    
+    # Mapping table for workflow navigation using new node identifiers
+    navigation_map = {
+        WorkflowPath.SIMPLE.value: "finalize_response",
+        WorkflowPath.TOOL.value: "execute_tool_logic",
+        WorkflowPath.MISSING_INFO.value: "request_clarification",
+        WorkflowPath.RISKY.value: "prepare_sensitive_action",
+        WorkflowPath.ERROR.value: "increment_retry",
     }
-    return mapping.get(route, "answer")
+    
+    return navigation_map.get(target_path, "finalize_response")
 
 
-def route_after_retry(state: AgentState) -> str:
-    """Decide whether to retry, fallback, or dead-letter.
-
-    TODO(student): implement bounded retry and dead-letter routing.
-    """
-    if int(state.get("attempt", 0)) >= int(state.get("max_attempts", 3)):
-        return "dead_letter"
-    return "tool"
-
-
-def route_after_evaluate(state: AgentState) -> str:
-    """Decide whether tool result is satisfactory or needs retry.
-
-    This is the 'done?' check that enables retry loops — a key LangGraph advantage over LCEL.
-    TODO(student): replace heuristic with LLM-as-judge or structured validation.
-    """
-    if state.get("evaluation_result") == "needs_retry":
-        return "retry"
-    return "answer"
+def eval_retry_status(current_context: GlobalState) -> str:
+    """Checks if the maximum number of retries has been reached."""
+    current_attempt = int(current_context.get("retry_count", 0))
+    threshold = int(current_context.get("limit_retries", 3))
+    
+    if current_attempt >= threshold:
+        return "handle_failure_exhaustion"
+    
+    return "execute_tool_logic"
 
 
-def route_after_approval(state: AgentState) -> str:
-    """Continue only if approved.
+def validate_execution_result(current_context: GlobalState) -> str:
+    """Determines if the node output is valid or requires a re-run."""
+    status = current_context.get("validation_status")
+    
+    if status == "needs_retry":
+        return "increment_retry"
+    
+    return "finalize_response"
 
-    TODO(student): support reject/edit outcomes.
-    """
-    approval = state.get("approval") or {}
-    return "tool" if approval.get("approved") else "clarify"
+
+def process_human_feedback(current_context: GlobalState) -> str:
+    """Routes the workflow based on the result of a human approval step."""
+    feedback = current_context.get("approval_data") or {}
+    
+    # If explicitly approved, proceed to tool execution; otherwise, request clarification
+    if feedback.get("is_approved"):
+        return "execute_tool_logic"
+    
+    return "request_clarification"

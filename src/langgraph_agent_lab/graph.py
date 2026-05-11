@@ -1,71 +1,123 @@
-"""Graph construction.
+"""Workflow orchestration for the agentic system.
 
-This module is intentionally import-safe. It imports LangGraph only inside the builder so unit tests
-that check schema/metrics can run even if students are still debugging graph wiring.
+This module constructs the state graph using LangGraph, defining the execution 
+flow, conditional branching, and retry mechanisms.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from langgraph.checkpoint.base import BaseCheckpointSaver
+    from langgraph.graph.state import CompiledStateGraph
 
 from .nodes import (
-    answer_node,
-    approval_node,
-    ask_clarification_node,
-    classify_node,
-    dead_letter_node,
-    evaluate_node,
-    finalize_node,
-    intake_node,
-    retry_or_fallback_node,
-    risky_action_node,
-    tool_node,
+    analyze_intent,
+    execute_tool_logic,
+    finalize_response,
+    handle_authorization,
+    handle_failure_exhaustion,
+    increment_retry,
+    prepare_input,
+    prepare_sensitive_action,
+    request_clarification,
+    verify_result,
+    wrap_up_session,
 )
-from .routing import route_after_approval, route_after_classify, route_after_evaluate, route_after_retry
-from .state import AgentState
+from .routing import (
+    determine_next_step,
+    eval_retry_status,
+    process_human_feedback,
+    validate_execution_result,
+)
+from .state import GlobalState
 
 
-def build_graph(checkpointer: Any | None = None):
-    """Build and compile the LangGraph workflow.
+def build_graph(storage: BaseCheckpointSaver | None = None) -> CompiledStateGraph:
+    """Configures and compiles the agent's execution graph.
 
-    TODO(student): review the architecture and modify nodes/edges only with a clear reason.
-    Required behaviors:
-    - intake -> classify (normalization + routing)
-    - classify routes to answer/tool/clarify/risky/retry
-    - tool -> evaluate creates the retry loop (slide: "done?" check)
-    - risky path requires approval before tool/action
-    - retry loop bounded by max_attempts -> dead_letter on exhaustion
-    - all paths eventually reach finalize -> END
+    The workflow follows these high-level stages:
+    1. Input Preparation: Sanitizes and initializes the session.
+    2. Intent Analysis: Routes the request to the appropriate handler.
+    3. Tool Execution: Runs mock utilities with built-in validation loops.
+    4. Authorization: Handles sensitive actions through an approval gate.
+    5. Finalization: Aggregates results and logs the exit state.
     """
     try:
         from langgraph.graph import END, START, StateGraph
-    except Exception as exc:  # pragma: no cover - helpful install error
-        raise RuntimeError("LangGraph is required. Run: pip install -e '.[dev]' or pip install langgraph") from exc
+    except Exception as err:
+        raise ImportError(
+            "LangGraph library is missing. Please ensure it is installed correctly."
+        ) from err
 
-    graph = StateGraph(AgentState)
-    graph.add_node("intake", intake_node)
-    graph.add_node("classify", classify_node)
-    graph.add_node("answer", answer_node)
-    graph.add_node("tool", tool_node)
-    graph.add_node("evaluate", evaluate_node)
-    graph.add_node("clarify", ask_clarification_node)
-    graph.add_node("risky_action", risky_action_node)
-    graph.add_node("approval", approval_node)
-    graph.add_node("retry", retry_or_fallback_node)
-    graph.add_node("dead_letter", dead_letter_node)
-    graph.add_node("finalize", finalize_node)
+    # Initialize graph with the global state schema
+    builder = StateGraph(GlobalState)
+    
+    # Registering processing nodes
+    builder.add_node("prepare_input", prepare_input)  # type: ignore[call-overload]
+    builder.add_node("analyze_intent", analyze_intent)  # type: ignore[call-overload]
+    builder.add_node("finalize_response", finalize_response)  # type: ignore[call-overload]
+    builder.add_node("execute_tool_logic", execute_tool_logic)  # type: ignore[call-overload]
+    builder.add_node("verify_result", verify_result)  # type: ignore[call-overload]
+    builder.add_node("request_clarification", request_clarification)  # type: ignore[call-overload]
+    builder.add_node("prepare_sensitive_action", prepare_sensitive_action)  # type: ignore[call-overload]
+    builder.add_node("handle_authorization", handle_authorization)  # type: ignore[call-overload]
+    builder.add_node("increment_retry", increment_retry)  # type: ignore[call-overload]
+    builder.add_node("handle_failure_exhaustion", handle_failure_exhaustion)  # type: ignore[call-overload]
+    builder.add_node("wrap_up_session", wrap_up_session)  # type: ignore[call-overload]
 
-    graph.add_edge(START, "intake")
-    graph.add_edge("intake", "classify")
-    graph.add_conditional_edges("classify", route_after_classify)
-    graph.add_edge("tool", "evaluate")
-    graph.add_conditional_edges("evaluate", route_after_evaluate)
-    graph.add_edge("clarify", "finalize")
-    graph.add_edge("risky_action", "approval")
-    graph.add_conditional_edges("approval", route_after_approval)
-    graph.add_conditional_edges("retry", route_after_retry)
-    graph.add_edge("answer", "finalize")
-    graph.add_edge("dead_letter", "finalize")
-    graph.add_edge("finalize", END)
+    # Defining static and conditional edges
+    builder.add_edge(START, "prepare_input")
+    builder.add_edge("prepare_input", "analyze_intent")
+    
+    # Using identity mapping for conditional edges
+    builder.add_conditional_edges(
+        "analyze_intent", 
+        determine_next_step,
+        {
+            "finalize_response": "finalize_response",
+            "execute_tool_logic": "execute_tool_logic",
+            "request_clarification": "request_clarification",
+            "prepare_sensitive_action": "prepare_sensitive_action",
+            "increment_retry": "increment_retry"
+        }
+    )
+    
+    builder.add_edge("execute_tool_logic", "verify_result")
+    
+    builder.add_conditional_edges(
+        "verify_result", 
+        validate_execution_result,
+        {
+            "increment_retry": "increment_retry",
+            "finalize_response": "finalize_response"
+        }
+    )
+    
+    builder.add_edge("request_clarification", "wrap_up_session")
+    builder.add_edge("prepare_sensitive_action", "handle_authorization")
+    
+    builder.add_conditional_edges(
+        "handle_authorization", 
+        process_human_feedback,
+        {
+            "execute_tool_logic": "execute_tool_logic",
+            "request_clarification": "request_clarification"
+        }
+    )
+    
+    builder.add_conditional_edges(
+        "increment_retry", 
+        eval_retry_status,
+        {
+            "execute_tool_logic": "execute_tool_logic",
+            "handle_failure_exhaustion": "handle_failure_exhaustion"
+        }
+    )
+    
+    builder.add_edge("finalize_response", "wrap_up_session")
+    builder.add_edge("handle_failure_exhaustion", "wrap_up_session")
+    builder.add_edge("wrap_up_session", END)
 
-    return graph.compile(checkpointer=checkpointer)
+    return builder.compile(checkpointer=storage)
